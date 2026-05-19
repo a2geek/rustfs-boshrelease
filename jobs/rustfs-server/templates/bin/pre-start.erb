@@ -1,0 +1,25 @@
+#!/bin/bash
+set -eu
+
+STORE_DIR=<%= p('rustfs.persistent_disk_path') %>
+DATA_DIR=/var/vcap/data/rustfs-server
+
+# Create persistent data volume sub-directories.
+# Names match the volume paths emitted by bpm.yml.erb RUSTFS_VOLUMES.
+<% vols_per_node = p('rustfs.volumes_per_node').to_i -%>
+<% if vols_per_node == 1 -%>
+mkdir -p "${STORE_DIR}/data0"
+<% else -%>
+<% (0...vols_per_node).each do |i| -%>
+mkdir -p "${STORE_DIR}/data<%= i %>"
+<% end -%>
+<% end -%>
+
+# Create ephemeral working directory.
+mkdir -p "${DATA_DIR}/tmp"
+
+# BPM runs rustfs as vcap — ensure ownership before process starts.
+chown -R vcap:vcap "${STORE_DIR}" "${DATA_DIR}"
+chmod -R 0750 "${STORE_DIR}" "${DATA_DIR}"
+
+exit 0

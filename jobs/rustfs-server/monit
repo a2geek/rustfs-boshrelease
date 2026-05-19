@@ -1,0 +1,5 @@
+check process rustfs-server
+  with pidfile /var/vcap/sys/run/bpm/rustfs-server/rustfs-server.pid
+  start program "/var/vcap/jobs/bpm/bin/bpm start rustfs-server"
+  stop program "/var/vcap/jobs/bpm/bin/bpm stop rustfs-server"
+  group vcap

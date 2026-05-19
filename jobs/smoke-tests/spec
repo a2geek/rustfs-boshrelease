@@ -1,0 +1,49 @@
+---
+name: smoke-tests
+
+description: |
+  Errand verifying RustFS cluster is healthy and S3 API functions end-to-end.
+  Probes /health on every peer discovered via the rustfs-peer BOSH link, then
+  performs a full S3 cycle — CreateBucket, PutObject, GetObject (content verify),
+  DeleteObject, HeadObject (expect 404), DeleteBucket — against the first peer.
+
+  Authentication uses AWS Signature Version 2 via openssl + curl. No extra
+  packages are required beyond the Ubuntu Noble stemcell base tools (bash, curl,
+  openssl, base64, date).
+
+  Packages block is intentionally empty for v0.1. When a bundled mc or aws-cli
+  blob package is added, list it here and update templates/bin/run.erb accordingly.
+
+packages: []
+
+templates:
+  bin/run.erb: bin/run
+
+consumes:
+  - name: rustfs-peer
+    type: rustfs-peer
+
+properties:
+  rustfs.access_key:
+    description: |
+      Admin access key for smoke-test S3 operations.
+      Must match the rustfs.access_key set on the rustfs-server job.
+
+  rustfs.secret_key:
+    description: |
+      Admin secret key for smoke-test S3 operations.
+      Must match the rustfs.secret_key set on the rustfs-server job.
+
+  rustfs.port:
+    description: S3 API port. Must match the rustfs-server job's rustfs.port.
+    default: 9000
+
+  rustfs.region:
+    description: |
+      S3 region string to present in API requests.
+      Must match the rustfs-server job's rustfs.region.
+    default: us-east-1
+
+  smoke_tests.timeout_secs:
+    description: curl --max-time value in seconds for each request.
+    default: 30

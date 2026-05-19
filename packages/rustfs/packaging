@@ -1,0 +1,45 @@
+#!/bin/bash
+set -eu
+
+# Require unzip — not always present on every stemcell variant.
+if ! which unzip >/dev/null 2>&1; then
+  echo "unzip not found in PATH; required to extract rustfs archive" >&2
+  exit 1
+fi
+
+mkdir -p "${BOSH_INSTALL_TARGET}/bin"
+
+# Locate the rustfs zip archive matched by the spec glob.
+archive=$(ls rustfs/rustfs-linux-x86_64-musl-*.zip 2>/dev/null | head -n1)
+if [ -z "${archive}" ]; then
+  echo "rustfs zip archive not found — check blob key matches spec glob" >&2
+  exit 1
+fi
+
+echo "Extracting ${archive}..."
+extract_dir=/tmp/rustfs-extract-$$
+mkdir -p "${extract_dir}"
+unzip -q -o "${archive}" -d "${extract_dir}"
+
+# Locate the rustfs binary inside the extracted tree.
+# NOTE: zip structure from upstream is not guaranteed — R1 reports binary at top
+# level; if a versioned subdirectory is introduced this find covers both cases.
+binary=$(find "${extract_dir}" -name rustfs -type f -perm /111 | head -n1)
+if [ -z "${binary}" ]; then
+  # Fallback: any file named rustfs (catches non-executable bit edge cases).
+  binary=$(find "${extract_dir}" -name rustfs -type f | head -n1)
+fi
+if [ -z "${binary}" ]; then
+  echo "rustfs binary not found inside ${archive}; archive contents:" >&2
+  find "${extract_dir}" -maxdepth 3 -type f >&2
+  rm -rf "${extract_dir}"
+  exit 1
+fi
+
+cp "${binary}" "${BOSH_INSTALL_TARGET}/bin/rustfs"
+chmod 0755 "${BOSH_INSTALL_TARGET}/bin/rustfs"
+
+rm -rf "${extract_dir}"
+
+echo "Installed: ${BOSH_INSTALL_TARGET}/bin/rustfs"
+"${BOSH_INSTALL_TARGET}/bin/rustfs" --version 2>/dev/null || true

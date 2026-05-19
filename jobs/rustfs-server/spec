@@ -1,0 +1,173 @@
+---
+name: rustfs-server
+
+description: |
+  RustFS S3-compatible object storage server. Managed by bpm.
+  Scales 1 to N via the rustfs-peer BOSH link for cluster peer discovery.
+
+packages:
+  - rustfs
+
+templates:
+  bin/pre-start.erb:       bin/pre-start
+  bin/post-start.erb:      bin/post-start
+  bin/post-deploy.erb:     bin/post-deploy
+  config/bpm.yml.erb:      config/bpm.yml
+  config/env.sh.erb:       config/env.sh
+  tls/api/cert.pem.erb:    tls/api/cert.pem
+  tls/api/key.pem.erb:     tls/api/key.pem
+  tls/peer/ca.pem.erb:     tls/peer/ca.pem
+  tls/peer/cert.pem.erb:   tls/peer/cert.pem
+  tls/peer/key.pem.erb:    tls/peer/key.pem
+
+provides:
+  - name: rustfs-peer
+    type: rustfs-peer
+    properties:
+      - rustfs.port
+
+consumes:
+  - name: rustfs-peer
+    type: rustfs-peer
+
+properties:
+  rustfs.access_key:
+    description: |
+      Admin access key (S3 root credential, maps to RUSTFS_ACCESS_KEY).
+      Minimum 3 characters. Required. No default — use CredHub interpolation
+      or an explicit manifest value.
+    example: AKIAIOSFODNN7EXAMPLE
+
+  rustfs.secret_key:
+    description: |
+      Admin secret key (S3 root credential, maps to RUSTFS_SECRET_KEY).
+      Minimum 8 characters. Required. No default — use CredHub interpolation
+      or an explicit manifest value.
+
+  rustfs.region:
+    description: S3 region label returned in API responses.
+    default: us-east-1
+
+  rustfs.log_level:
+    description: "Log level for RUSTFS_OBS_LOGGER_LEVEL. Values: trace, debug, info, warn, error."
+    default: info
+
+  rustfs.obs_log_directory:
+    description: |
+      Directory for log file output (RUSTFS_OBS_LOG_DIRECTORY).
+      Empty string routes logs to stdout, which bpm captures to
+      /var/vcap/sys/log/rustfs-server/.
+    default: ""
+
+  rustfs.port:
+    description: |
+      TCP port for the S3 API, admin interface, and internode gRPC
+      (RUSTFS_ADDRESS). All cluster peers must use the same port.
+    default: 9000
+
+  rustfs.console_port:
+    description: TCP port for the web console (RUSTFS_CONSOLE_ADDRESS).
+    default: 9001
+
+  rustfs.console_enable:
+    description: Enable the web console (RUSTFS_CONSOLE_ENABLE).
+    default: true
+
+  rustfs.persistent_disk_path:
+    description: |
+      Base directory for data volumes on the persistent disk.
+      Sub-directories data0..dataN-1 are created here by pre-start.
+    default: /var/vcap/store/rustfs
+
+  rustfs.volumes_per_node:
+    description: |
+      Number of data sub-directories per node (e.g., data0, data1, ...).
+      Combined with the peer count from the rustfs-peer link to build
+      RUSTFS_VOLUMES. Minimum 1; recommended 4 for erasure-coded clusters.
+      Use 1 only for single-node, single-volume deployments (no erasure coding).
+    default: 4
+
+  rustfs.server_domains:
+    description: |
+      Comma-separated virtual-hosted-style domain list
+      (RUSTFS_SERVER_DOMAINS). Leave empty to disable.
+    default: ""
+
+  rustfs.health_enable:
+    description: |
+      Enable /health and /health/ready endpoints
+      (RUSTFS_HEALTH_ENDPOINT_ENABLE).
+    default: true
+
+  rustfs.internode.connect_timeout_secs:
+    description: |
+      Internode connect timeout in seconds
+      (RUSTFS_INTERNODE_CONNECT_TIMEOUT_SECS).
+    default: 3
+
+  rustfs.internode.tcp_keepalive_secs:
+    description: |
+      Internode TCP keepalive in seconds
+      (RUSTFS_INTERNODE_TCP_KEEPALIVE_SECS).
+    default: 10
+
+  rustfs.internode.rpc_timeout_secs:
+    description: |
+      Internode RPC timeout in seconds
+      (RUSTFS_INTERNODE_RPC_TIMEOUT_SECS).
+    default: 10
+
+  rustfs.tls.certificate:
+    description: |
+      PEM-encoded TLS certificate for the S3 API endpoint
+      (written to tls/api/cert.pem, referenced via RUSTFS_TLS_PATH).
+      Optional — omit for plaintext HTTP.
+
+  rustfs.tls.key:
+    description: |
+      PEM-encoded TLS private key for the S3 API endpoint
+      (written to tls/api/key.pem, referenced via RUSTFS_TLS_PATH).
+      Optional — omit for plaintext HTTP.
+
+  rustfs.peer.tls.ca:
+    description: |
+      PEM-encoded TLS CA certificate for verifying cluster peer connections.
+      Optional — omit to skip peer TLS.
+
+  rustfs.peer.tls.certificate:
+    description: |
+      PEM-encoded TLS certificate for cluster peer communication.
+      Optional — omit to skip peer TLS.
+
+  rustfs.peer.tls.key:
+    description: |
+      PEM-encoded TLS private key for cluster peer communication.
+      Optional — omit to skip peer TLS.
+
+  rustfs.kms.enable:
+    description: |
+      Enable server-side encryption via KMS integration
+      (RUSTFS_KMS_ENABLE).
+    default: false
+
+  rustfs.kms.backend:
+    description: |
+      KMS backend to use when kms.enable is true
+      (RUSTFS_KMS_BACKEND). Values: local, vault, vault-kv2, vault-transit.
+    default: local
+
+  rustfs.kms.vault_address:
+    description: |
+      Vault server address for KMS (RUSTFS_KMS_VAULT_ADDRESS).
+      Required when kms.backend is vault, vault-kv2, or vault-transit.
+    default: ""
+
+  rustfs.kms.vault_token:
+    description: |
+      Vault token for KMS authentication (RUSTFS_KMS_VAULT_TOKEN).
+      Required when kms.backend is vault, vault-kv2, or vault-transit.
+    default: ""
+
+  rustfs.bpm.open_files:
+    description: BPM open_files ulimit for the rustfs-server process.
+    default: 65536

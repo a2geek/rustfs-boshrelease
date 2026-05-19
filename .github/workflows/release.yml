@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Create BOSH Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install bosh-cli
+        run: |
+          BOSH_VERSION=$(curl -s https://api.github.com/repos/cloudfoundry/bosh-cli/releases/latest \
+            | jq -r '.tag_name' | sed 's/^v//')
+          curl -Lo /usr/local/bin/bosh \
+            "https://github.com/cloudfoundry/bosh-cli/releases/download/v${BOSH_VERSION}/bosh-cli-${BOSH_VERSION}-linux-amd64"
+          chmod +x /usr/local/bin/bosh
+          bosh --version
+
+      - name: Configure blobstore credentials
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          cat > config/private.yml <<EOF
+          ---
+          blobstore:
+            provider: s3
+            options:
+              access_key_id: "${AWS_ACCESS_KEY_ID}"
+              secret_access_key: "${AWS_SECRET_ACCESS_KEY}"
+          EOF
+
+      - name: Download RustFS binary blob
+        run: |
+          # Determine RustFS blob version from packages/rustfs/spec
+          BLOB_FILE=$(grep -E '^\s+-\s+rustfs/' packages/rustfs/spec | head -1 \
+            | sed 's/.*rustfs\///' | tr -d ' ')
+          # BLOB_FILE is e.g. rustfs-linux-x86_64-musl-1.0.0-beta.3.zip
+          # Reconstruct asset name (upstream uses 'v' prefix in asset filename, not blob key)
+          # Pattern: rustfs-linux-x86_64-musl-1.0.0-beta.3.zip -> version = 1.0.0-beta.3
+          BLOB_VERSION=$(echo "${BLOB_FILE}" | sed 's/rustfs-linux-x86_64-musl-//' | sed 's/\.zip//')
+          ASSET="rustfs-linux-x86_64-musl-v${BLOB_VERSION}.zip"
+          DOWNLOAD_URL="https://github.com/rustfs/rustfs/releases/download/${BLOB_VERSION}/${ASSET}"
+          echo "Downloading ${DOWNLOAD_URL}"
+          curl -fLo "/tmp/${BLOB_FILE}" "${DOWNLOAD_URL}"
+
+          # Verify checksum against upstream SHA256SUMS
+          SUMS_URL="https://github.com/rustfs/rustfs/releases/download/${BLOB_VERSION}/SHA256SUMS"
+          if curl -fLo /tmp/SHA256SUMS "${SUMS_URL}" 2>/dev/null; then
+            # Extract the line for our asset name (upstream file lists v-prefixed name)
+            EXPECTED=$(grep "${ASSET}" /tmp/SHA256SUMS | awk '{print $1}')
+            ACTUAL=$(sha256sum "/tmp/${BLOB_FILE}" | awk '{print $1}')
+            if [ "${EXPECTED}" != "${ACTUAL}" ]; then
+              echo "SHA256 mismatch: expected ${EXPECTED}, got ${ACTUAL}"
+              exit 1
+            fi
+            echo "SHA256 verified: ${ACTUAL}"
+          else
+            echo "No upstream SHA256SUMS available; skipping checksum verification"
+          fi
+
+          bosh add-blob "/tmp/${BLOB_FILE}" "rustfs/${BLOB_FILE}"
+          bosh upload-blobs
+
+      - name: Create final release
+        run: |
+          bosh -n create-release --final --version "${{ steps.version.outputs.version }}"
+
+      - name: Create release tarball
+        run: |
+          bosh -n create-release \
+            "releases/rustfs/rustfs-${{ steps.version.outputs.version }}.yml" \
+            --tarball "releases/rustfs/rustfs-${{ steps.version.outputs.version }}.tgz"
+          sha256sum "releases/rustfs/rustfs-${{ steps.version.outputs.version }}.tgz" \
+            > "releases/rustfs/rustfs-${{ steps.version.outputs.version }}.tgz.sha256"
+
+      - name: Commit release index
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add releases/rustfs/ config/blobs.yml
+          git commit -m "Release ${{ steps.version.outputs.version }}" || true
+          git push
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "rustfs-boshrelease ${{ steps.version.outputs.version }}"
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: |
+            releases/rustfs/rustfs-${{ steps.version.outputs.version }}.tgz
+            releases/rustfs/rustfs-${{ steps.version.outputs.version }}.tgz.sha256

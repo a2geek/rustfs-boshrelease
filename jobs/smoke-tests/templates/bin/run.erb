@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# RustFS smoke-test errand.
+# Tests: /health probe on every peer + S3 CreateBucket/PutObject/GetObject/
+#        DeleteObject/HeadObject(404)/DeleteBucket cycle against primary peer.
+# Auth:  AWS Signature Version 2 via openssl + curl (no extra packages needed).
+# Usage: bosh -d <deployment> run-errand smoke-tests
+set -e -u -o pipefail
+
+<%
+  peers   = link('rustfs-peer').instances
+  port    = p('rustfs.port')
+  timeout = p('smoke_tests.timeout_secs')
+-%>
+
+ACCESS_KEY="<%= p('rustfs.access_key') %>"
+SECRET_KEY="<%= p('rustfs.secret_key') %>"
+PORT=<%= port %>
+REGION="<%= p('rustfs.region') %>"
+TIMEOUT=<%= timeout %>
+
+# Peer list from BOSH link (includes primary).
+PEERS=(
+<% peers.each do |inst| -%>
+  "<%= inst.address %>"
+<% end -%>
+)
+
+PRIMARY="${PEERS[0]}"
+ENDPOINT="http://${PRIMARY}:${PORT}"
+
+# Unique bucket name scoped to this errand run so parallel runs don't clash.
+BUCKET="smoke-$(date +%s)-$$"
+KEY="smoke-test.txt"
+PAYLOAD="rustfs smoke test payload $(date -u +%FT%TZ)"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+fail() {
+  echo "SMOKE FAIL: $*" >&2
+  exit 1
+}
+
+ok() {
+  echo "SMOKE OK:   $*"
+}
+
+# sign_v2 <METHOD> <content-type> <canonical-resource>
+# Prints two header lines: "Date: ..." and "Authorization: AWS <key>:<sig>"
+# AWS SigV2 string-to-sign: METHOD\n\nContent-Type\nDate\nCanonicalResource
+sign_v2() {
+  local method="$1"
+  local content_type="$2"
+  local resource="$3"
+  local date_str
+  date_str="$(date -u +"%a, %d %b %Y %H:%M:%S GMT")"
+  # Printf %b interprets \n as newline — required for correct HMAC input.
+  local signature
+  signature="$(printf '%b' "${method}\n\n${content_type}\n${date_str}\n${resource}" \
+    | openssl dgst -sha1 -hmac "${SECRET_KEY}" -binary \
+    | base64)"
+  printf 'Date: %s\nAuthorization: AWS %s:%s\n' \
+    "${date_str}" "${ACCESS_KEY}" "${signature}"
+}
+
+# s3_request <METHOD> <path> [content-type] [body-data]
+# Returns curl exit code. Caller decides whether to fail.
+s3_request() {
+  local method="$1"
+  local path="$2"
+  local content_type="${3:-}"
+  local body="${4:-}"
+
+  local hdrs
+  hdrs="$(sign_v2 "${method}" "${content_type}" "${path}")"
+  local date_hdr auth_hdr
+  date_hdr="$(echo "${hdrs}" | head -1)"
+  auth_hdr="$(echo "${hdrs}" | tail -1)"
+
+  local curl_args=(
+    -fsS
+    --max-time "${TIMEOUT}"
+    -X "${method}"
+    -H "${date_hdr}"
+    -H "${auth_hdr}"
+  )
+
+  if [[ -n "${content_type}" ]]; then
+    curl_args+=(-H "Content-Type: ${content_type}")
+  fi
+
+  if [[ -n "${body}" ]]; then
+    curl_args+=(--data-binary "${body}")
+  fi
+
+  curl "${curl_args[@]}" "${ENDPOINT}${path}"
+}
+
+# s3_head_status <path>
+# Returns the HTTP status code for a HEAD request (does not fail on 4xx).
+s3_head_status() {
+  local path="$1"
+  local hdrs
+  hdrs="$(sign_v2 HEAD "" "${path}")"
+  local date_hdr auth_hdr
+  date_hdr="$(echo "${hdrs}" | head -1)"
+  auth_hdr="$(echo "${hdrs}" | tail -1)"
+
+  curl -sS --max-time "${TIMEOUT}" \
+    -o /dev/null \
+    -w '%{http_code}' \
+    -X HEAD \
+    -H "${date_hdr}" \
+    -H "${auth_hdr}" \
+    "${ENDPOINT}${path}"
+}
+
+# ---------------------------------------------------------------------------
+# Phase 1: /health probe on every peer
+# ---------------------------------------------------------------------------
+echo "=== Phase 1: Cluster health probe (${#PEERS[@]} peer(s)) ==="
+for peer in "${PEERS[@]}"; do
+  if curl -fsS --max-time "${TIMEOUT}" "http://${peer}:${PORT}/health" >/dev/null 2>&1; then
+    ok "health ${peer}:${PORT}"
+  else
+    fail "health probe failed — http://${peer}:${PORT}/health did not return 2xx within ${TIMEOUT}s"
+  fi
+done
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# Phase 2: S3 API round-trip (CreateBucket → Put → Get → Delete → Head → DeleteBucket)
+# ---------------------------------------------------------------------------
+echo "=== Phase 2: S3 round-trip (endpoint=${ENDPOINT}, bucket=${BUCKET}) ==="
+
+# CreateBucket
+s3_request PUT "/${BUCKET}" "" "" \
+  || fail "CreateBucket /${BUCKET} — HTTP error"
+ok "CreateBucket ${BUCKET}"
+
+# PutObject
+s3_request PUT "/${BUCKET}/${KEY}" "text/plain" "${PAYLOAD}" \
+  || fail "PutObject /${BUCKET}/${KEY} — HTTP error"
+ok "PutObject ${KEY}"
+
+# GetObject and verify content
+got="$(s3_request GET "/${BUCKET}/${KEY}" "" "" \
+  || fail "GetObject /${BUCKET}/${KEY} — HTTP error")"
+
+if [[ "${got}" != "${PAYLOAD}" ]]; then
+  fail "GetObject content mismatch — expected: '${PAYLOAD}', got: '${got}'"
+fi
+ok "GetObject content verified"
+
+# DeleteObject
+s3_request DELETE "/${BUCKET}/${KEY}" "" "" \
+  || fail "DeleteObject /${BUCKET}/${KEY} — HTTP error"
+ok "DeleteObject ${KEY}"
+
+# HeadObject — must return 404 to confirm deletion
+http_code="$(s3_head_status "/${BUCKET}/${KEY}")"
+if [[ "${http_code}" != "404" ]]; then
+  fail "HeadObject after delete returned HTTP ${http_code} — object still present"
+fi
+ok "HeadObject returned 404 — deletion confirmed"
+
+# DeleteBucket (best-effort cleanup; do not fail errand if this errors)
+s3_request DELETE "/${BUCKET}" "" "" >/dev/null 2>&1 || true
+ok "DeleteBucket ${BUCKET} (cleanup)"
+
+echo ""
+echo "=== ALL SMOKE CHECKS PASSED ==="
+exit 0
