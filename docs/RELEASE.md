@@ -63,7 +63,7 @@ The `config/blobs.yml` file is updated with the blobstore `object_id` and SHA.
 bosh create-release --final --version X.Y.Z
 ```
 
-Replace `X.Y.Z` with the release version (e.g. `0.1.0`). This version is independent
+Replace `X.Y.Z` with the release version (e.g. `0.0.1`). This version is independent
 of the upstream RustFS version. Use [semantic versioning](https://semver.org/).
 
 The command:
